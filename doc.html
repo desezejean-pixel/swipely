@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tailored document</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="doc.css">
+</head>
+<body>
+  <div class="toolbar">
+    <div class="toolbar-title">
+      <img src="icons/logo.svg" alt="" width="26" height="26">
+      <div>
+        <b id="docKind"></b>
+        <span id="docFor"></span>
+      </div>
+    </div>
+    <div class="toolbar-actions">
+      <div class="seg" role="group" aria-label="Language">
+        <button id="langFr" type="button">FR</button>
+        <button id="langEn" type="button">EN</button>
+      </div>
+      <button id="ai" type="button" hidden><span data-icon="sparkles"></span> Improve with Chrome AI</button>
+      <button id="undoAi" type="button" hidden>Undo AI</button>
+      <button id="reset" type="button">Reset</button>
+      <button id="print" class="primary" type="button">Save as PDF / Print</button>
+    </div>
+    <p id="status" class="status">Click anywhere in the page to edit it. Your changes are saved for this offer.</p>
+  </div>
+
+  <main id="page" class="sheet" contenteditable="true" spellcheck="true"></main>
+
+  <script src="translate.js"></script>
+  <script src="icons.js"></script>
+  <script src="common.js"></script>
+  <script src="cv-data.example.js"></script>
+  <script src="cv-data.js" onerror="this.remove()"></script>
+  <script src="tailor.js"></script>
+  <script src="doc.js"></script>
+</body>
+</html>

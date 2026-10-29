@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Swipely</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="popup">
+  <header>
+    <h1><img class="logo" src="icons/logo.svg" alt="" width="22" height="22">Save to Swipely</h1>
+    <button id="open" type="button">Open tracker</button>
+  </header>
+
+  <button id="listBanner" class="list-banner" type="button" hidden></button>
+  <div id="banner" class="banner" hidden></div>
+
+  <form id="form">
+    <div id="fields"><p class="muted">Reading the page…</p></div>
+    <details id="descBox" class="more" hidden>
+      <summary>Offer description</summary>
+      <div id="desc" class="desc"></div>
+    </details>
+    <div class="footer">
+      <span id="msg" class="msg"></span>
+      <button id="save" class="primary" type="submit">Save</button>
+    </div>
+  </form>
+
+  <section id="list" class="list" hidden>
+    <div class="list-head">
+      <label class="check-all"><input id="checkAll" type="checkbox"> Select all</label>
+      <button id="back" class="link" type="button">← Back to single offer</button>
+    </div>
+    <div id="items" class="items"></div>
+    <div class="footer">
+      <span id="listMsg" class="msg"></span>
+      <button id="addSelected" class="primary" type="button" disabled>Add</button>
+    </div>
+  </section>
+
+  <script src="translate.js"></script>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

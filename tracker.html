@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Swipely</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="icons/icon32.png">
+</head>
+<body>
+  <div class="page">
+    <div class="top">
+      <h1><img class="logo" src="icons/logo.svg" alt="" width="36" height="36"><span class="title-text">Swipely</span></h1>
+      <div class="seg view-toggle big" role="group" aria-label="View">
+        <button id="viewDiscover" type="button" title="Discover"><span data-icon="heart"></span><span class="label">Discover</span> <span id="discoverCount" class="badge"></span></button>
+        <button id="viewBoard" type="button" title="Board"><span data-icon="board"></span><span class="label">Board</span> <span id="boardCount" class="badge"></span></button>
+        <button id="viewList" type="button" title="List"><span data-icon="list"></span><span class="label">List</span></button>
+      </div>
+      <button id="add" class="primary" type="button"><span data-icon="plus"></span><span class="label">Add</span></button>
+      <details class="more-menu">
+        <summary title="My CV, Preferences, Searches and more"><span data-icon="more"></span></summary>
+        <div class="menu">
+          <button id="cvBtn" type="button"><span data-icon="file"></span>My CV</button>
+          <button id="profileBtn" type="button"><span data-icon="sliders"></span>Preferences</button>
+          <button id="searchesBtn" type="button"><span data-icon="search"></span>Searches</button>
+          <hr>
+          <button id="langBtn" type="button" title="Interface language"><span data-icon="globe"></span><span id="langLabel">Français</span></button>
+          <button id="help" type="button"><span data-icon="help"></span>How it works</button>
+          <button id="calAll" type="button"><span data-icon="calendar"></span>All dates to my calendar</button>
+          <button id="csv" type="button"><span data-icon="download"></span>Export to Excel</button>
+          <button id="backup" type="button"><span data-icon="copy"></span>Backup</button>
+          <button id="restore" type="button"><span data-icon="undo"></span>Restore backup</button>
+        </div>
+      </details>
+      <input id="restoreFile" type="file" accept=".json,application/json" hidden>
+    </div>
+
+    <div id="intro" class="intro" hidden></div>
+    <div id="chips" class="chips"></div>
+
+    <div class="tools">
+      <label class="search-box"><span data-icon="search"></span><input id="search" type="search" placeholder="Search"></label>
+      <select id="sort" aria-label="Sort by">
+        <option value="match">Best match</option>
+        <option value="posted">Most recently posted</option>
+        <option value="added">Newest first</option>
+        <option value="deadline">Deadline</option>
+        <option value="followUp">Follow-up date</option>
+        <option value="company">Company A–Z</option>
+        <option value="status">Status</option>
+      </select>
+      <div id="filterBar" class="filter-bar"></div>
+    </div>
+
+    <div id="cvBanner" class="suggest" hidden></div>
+    <div id="suggest" class="suggest" hidden></div>
+    <div id="archiveBanner" class="archive-banner" hidden></div>
+
+    <div id="empty" class="empty" hidden>
+      <h2>No internships yet</h2>
+      <p>Open an internship offer (LinkedIn, Welcome to the Jungle, JobTeaser, a company careers page…),
+        click this extension's icon in the Chrome toolbar, then press <b>Save</b>.</p>
+    </div>
+    <p id="noMatch" class="muted" hidden>No internship matches this filter.</p>
+
+    <div class="table-wrap">
+      <table id="table" hidden>
+        <thead>
+          <tr>
+            <th>Offer</th><th>Match</th><th>Step</th><th>Next date</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="pager" class="pager" hidden></div>
+
+    <div id="discover" class="discover" hidden></div>
+    <div id="board" class="board" hidden></div>
+
+    <p id="note" class="note">Your list is saved in this Chrome profile only. Click <b>Backup</b> now and then:
+      removing the extension erases its data.</p>
+  </div>
+
+  <dialog id="dialog">
+    <form id="editForm">
+      <h2 id="dlgTitle"></h2>
+      <div id="fields"></div>
+      <details id="descBox" class="more">
+        <summary>Offer description (saved from the page)</summary>
+        <div id="desc" class="desc"></div>
+      </details>
+      <div class="dialog-actions">
+        <button id="delete" class="danger" type="button">Delete</button>
+        <span class="spacer"></span>
+        <button id="cancel" type="button">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="searchDialog" class="wide-dialog">
+    <div class="dialog-body">
+      <h2>Saved searches</h2>
+      <p class="muted">Every day (from 8:00, while Chrome is open) the tracker checks these sites in the background and adds new offers
+        to Discover. Nothing opens on your screen, and LinkedIn is checked logged out: your account is never used.</p>
+      <h3 class="ov-title">Follow companies</h3>
+      <p class="muted">Follow a startup and Swipely watches its own job board every day, adding only the offers that fit you.</p>
+      <div id="followList" class="follow-list"></div>
+      <form id="followForm" class="follow-form">
+        <input id="followUrl" type="url" placeholder="Or paste a job board link (jobs.lever.co/…, jobs.ashbyhq.com/…, job-boards.greenhouse.io/…)">
+        <button class="primary small" type="submit">Follow</button>
+      </form>
+      <h3 class="ov-title">Overview by site</h3>
+      <div id="siteOverview" class="site-overview"></div>
+      <h3 class="ov-title">All searches, site by site</h3>
+      <div id="searchList" class="search-list"></div>
+      <form id="searchForm" class="search-form">
+        <h3>Add a search</h3>
+        <p class="muted">Do a search on LinkedIn, JobTeaser, Welcome to the Jungle (a company's jobs page) or a company's
+          careers page, then copy the address from Chrome's address bar and paste it here.</p>
+        <div class="grid">
+          <label class="field wide"><span>Address of the search page</span>
+            <input id="sUrl" type="url" required placeholder="https://www.linkedin.com/jobs/search/?keywords=stage%20marketing…"></label>
+          <label class="field wide"><span>Name (optional)</span>
+            <input id="sName" type="text" placeholder="e.g. Marketing internships Paris"></label>
+        </div>
+        <div class="dialog-actions"><span class="spacer"></span><button class="primary" type="submit">Add search</button></div>
+      </form>
+      <div class="dialog-actions">
+        <span id="scanStatus" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="scanAll" type="button">Check all now</button>
+        <button id="closeSearches" type="button">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="profileDialog" class="wide-dialog">
+    <form id="profileForm" class="dialog-body">
+      <h2><span data-icon="sliders"></span> Preferences <span class="info-tip" title="These criteria apply to all your searches (LinkedIn, company sites, startups you follow): an offer that doesn't fit is left out, and every offer gets a score from 0 to 100."><span data-icon="info"></span></span></h2>
+      <div id="profileTabs" class="seg ws-tabs"></div>
+      <div id="profileFields"></div>
+      <div class="dialog-actions">
+        <button id="resetProfile" class="link" type="button"><span data-icon="sparkles"></span> Fill in from my CV</button>
+        <span class="spacer"></span>
+        <button id="closeProfile" type="button">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="workspace" class="workspace-dialog">
+    <div class="dialog-body">
+      <div id="wsHead" class="ws-head"></div>
+      <div id="wsTabs" class="seg ws-tabs" role="tablist">
+        <button data-tab="steps" type="button"><span data-icon="checkCircle"></span>To do</button>
+        <button data-tab="docs" type="button"><span data-icon="file"></span>CV &amp; letter</button>
+        <button data-tab="messages" type="button"><span data-icon="mail"></span>Messages</button>
+        <button data-tab="people" type="button"><span data-icon="user"></span>People</button>
+        <button data-tab="offer" type="button"><span data-icon="info"></span>Offer</button>
+      </div>
+      <div id="wsBody" class="ws-body"></div>
+      <div class="dialog-actions">
+        <button id="wsEdit" type="button">Edit details</button>
+        <button id="wsDelete" class="danger" type="button"><span data-icon="trash"></span>Remove</button>
+        <span class="spacer"></span>
+        <button id="wsClose" type="button">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="cvDialog" class="wide-dialog cv-dialog">
+    <div class="dialog-body">
+      <h2><span data-icon="file"></span> My CV</h2>
+      <p class="muted">Your master CV, in English and French. Tailored CVs and cover letters only reorder and pick from what's here: they never invent anything.</p>
+      <button id="cvImportBtn" class="import-btn" type="button">
+        <span class="import-icon" data-icon="sparkles"></span>
+        <span class="import-text"><b>Auto-fill from my CV</b><span class="muted">Paste your CV or open a Word file: Swipely fills in every tab for you.</span></span>
+      </button>
+      <div id="cvTabs" class="seg ws-tabs"></div>
+      <div id="cvBody" class="cv-body"></div>
+      <div class="dialog-actions">
+        <button id="cvReset" class="link" type="button">Back to the CV from my file</button>
+        <span class="spacer"></span>
+        <button id="cvPreview" type="button">Preview</button>
+        <button id="cvClose" type="button">Cancel</button>
+        <button id="cvSave" class="primary" type="button">Save my CV</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="intDialog" class="int-dialog">
+    <form id="intForm" class="dialog-body">
+      <h2><span data-icon="calendar"></span> Interview</h2>
+      <p id="intFor" class="muted"></p>
+      <label class="field"><span>Date and time of the interview</span><input id="intAt" type="datetime-local"></label>
+      <div id="intAdd" class="int-add" hidden></div>
+      <div class="dialog-actions">
+        <button id="intClear" class="link" type="button">Remove the date</button>
+        <span class="spacer"></span>
+        <button id="intClose" type="button">Close</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="cvImportDialog" class="wide-dialog">
+    <div class="dialog-body">
+      <h2><span data-icon="sparkles"></span> Auto-fill from my CV</h2>
+      <p class="muted">Paste the text of your CV below, or open a Word (.docx) or text file. For a PDF: open it, select all (⌘A), copy (⌘C) and paste here.
+        If your Mac supports Chrome’s free AI, it fills everything in English and French. Nothing leaves your computer, and nothing is saved until you press “Save my CV”.</p>
+      <textarea id="cvImportText" rows="12" placeholder="Paste your CV here…"></textarea>
+      <div class="dialog-actions">
+        <label class="button-link small file-pick"><span data-icon="file"></span>Open a file<input id="cvImportFile" type="file" accept=".docx,.txt,.md,.pdf" hidden></label>
+        <span id="cvImportMsg" class="msg"></span>
+        <button id="cvImportClose" type="button">Cancel</button>
+        <button id="cvImportGo" class="primary" type="button">Fill in my CV</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="welcomeDialog" class="int-dialog">
+    <div class="dialog-body welcome">
+      <img class="logo" src="icons/logo.svg" alt="" width="64" height="64">
+      <h2>Welcome to Swipely</h2>
+      <p class="muted">Swipely finds internships and jobs that fit you and writes your CV and cover letter for each one. First, tell it who you are.</p>
+      <ol class="steps-mini">
+        <li>Fill in your CV (it can fill itself from your CV text or a Word file).</li>
+        <li>Check your Preferences: the jobs, places and words you want.</li>
+        <li>Swipe the offers that arrive every day.</li>
+      </ol>
+      <div class="dialog-actions">
+        <button id="welcomeLater" type="button">Later</button>
+        <span class="spacer"></span>
+        <button id="welcomeStart" class="primary" type="button">Fill in my CV</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="translate.js"></script>
+  <script src="icons.js"></script>
+  <script src="common.js"></script>
+  <script src="cv-data.example.js"></script>
+  <script src="cv-data.js" onerror="this.remove()"></script>
+  <script src="tailor.js"></script>
+  <script src="guides.js"></script>
+  <script src="tracker.js"></script>
+  <script src="cv-editor.js"></script>
+  <script src="cv-import.js"></script>
+  <script src="people-found.js" onerror="this.remove()"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# Personal data stays on your computer
+cv-data.js
+.DS_Store
+*.log
+backups/
+*.icns
+people-found.js
