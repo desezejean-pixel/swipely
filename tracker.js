@@ -23,14 +23,15 @@ let wsLang = '';
 
 // Archived offers (new offers published more than 4 weeks ago) live apart, seen only with the "Archived" chip.
 let archivedList = [];
+let companyLogos = new Map(); // company → a logo seen on one of its offers
 async function refresh() {
   let full;
   [full, profile] = await Promise.all([loadAll(), loadProfile()]);
   archivedList = full.filter((i) => i.archived);
+  companyLogos = companyLogoIndex(full);
   all = full.filter((i) => !i.archived);
   // The score also learns from what you liked and passed on (unless you turned it off in Preferences).
-  const roleWords = new Set(profile.roles.flatMap((r) => words(r.keywords)).flatMap((k) => norm(k).split(/\s+/)));
-  profile = { ...profile, taste: profile.learn === false ? null : buildTaste(full, roleWords) };
+  profile = withTaste(profile, full);
   currentProfile = profile;
   render();
 }
@@ -205,7 +206,7 @@ function nextDate(i) {
   if (i.status === 'Interview' && i.interviewAt) return ['Interview', `${formatDate(i.interviewAt.slice(0, 10))} · ${i.interviewAt.slice(11, 16)}`];
   if (['Applied', 'Interview'].includes(i.status) && i.followUpDate) return ['Follow up', formatDate(i.followUpDate)];
   if (['New', 'To apply'].includes(i.status) && i.deadline) return ['Deadline', formatDate(i.deadline)];
-  if (i.startDate) return ['Starts', formatDate(i.startDate)];
+  if (startLabel(i)) return ['Starts', startLabel(i)];
   if (i.postedAt && i.status === 'New') return ['Posted', formatDate(i.postedAt)];
   return null;
 }
@@ -279,7 +280,7 @@ function companyLogo(i) {
     title: i.company ? `${i.company}: open the company page` : 'Company',
     onclick: () => openWindow(page),
   });
-  tile.append(logoImage(logoCandidates(i, profile), () => letterTile(name)));
+  tile.append(logoImage(logoCandidates(i, profile, companyLogos), () => letterTile(name)));
   return tile;
 }
 
@@ -335,7 +336,7 @@ function detailRow(i, asBox = false) {
   const industries = (i.industry || (i.criteria || '').split(' · ').find((c) => /^(Industries|Secteurs?)/i.test(c))?.split(': ')[1] || '')
     .split(/,\s*(?=[A-ZÀ-Ý])/).map((x) => x.trim()).filter(Boolean).slice(0, 2);
   const longTerm = ['Internship', 'Apprenticeship', 'VIE'].includes(contract);
-  const chips = [contract, longTerm && i.duration && `Duration: ${i.duration}`, i.pay, i.workMode, i.startDate && `Starts ${formatDate(i.startDate)}`, ...industries]
+  const chips = [contract, longTerm && i.duration && `Duration: ${i.duration}`, i.pay, i.workMode, startLabel(i) && `Starts ${startLabel(i)}`, ...industries]
     .filter((v, n, a) => v && a.findIndex((x) => norm(x) === norm(v)) === n);
   let body;
   if (i.description) {
@@ -377,6 +378,13 @@ function toggleDetails(i) {
   renderTable();
 }
 
+// An offer read more than a day ago, not yet seen as taken down. LinkedIn's are left out (its daily limit).
+const CHECK_SHOWN_MS = 24 * 60 * 60 * 1000;
+function needsCheck(i) {
+  return Boolean(i.description) && !i.expired && /^https?:/.test(i.url || '') && !linkedinJobId(i.url)
+    && Date.now() - new Date(i.describedAt || i.createdAt).getTime() > CHECK_SHOWN_MS;
+}
+
 async function loadDescription(i, auto = false) {
   let origin = '';
   try {
@@ -391,8 +399,11 @@ async function loadDescription(i, auto = false) {
     autoTried.add(i.id);
     if (!(await chrome.permissions.contains({ origins: [origin] }))) return;
   } else if (!(await chrome.permissions.request({ origins: [origin] }))) return;
-  loading.add(i.id);
-  renderTable();
+  const silent = auto && Boolean(i.description); // only checking it's still online
+  if (!silent) {
+    loading.add(i.id);
+    renderTable();
+  }
   const res = await chrome.runtime.sendMessage({ type: 'describe', id: i.id });
   loading.delete(i.id);
   if (res?.error) await updateInternship(i.id, { describeError: res.error });
@@ -549,10 +560,19 @@ function renderFilterBar() {
     className: 'filter-toggle more-filters' + (moreFilters ? ' on' : '') + (activeCount ? ' active' : ''),
     onclick: () => { moreFilters = !moreFilters; filterBarState = ''; renderFilterBar(); },
   }, [icon('filter'), activeCount ? `Filters · ${activeCount}` : 'Filters', icon(moreFilters ? 'chevronDown' : 'chevronRight')]);
+  // One click: only Paris-area internships (again to see everything).
+  const parisOnly = JSON.stringify(filters.location || []) === '["Paris area"]' && JSON.stringify(filters.contract || []) === '["Internship"]';
+  const parisBtn = view === 'discover' ? el('button', {
+    type: 'button',
+    className: 'filter-toggle paris-btn' + (parisOnly ? ' active' : ''),
+    title: parisOnly ? 'Show every offer again' : 'Only internships in Paris and around',
+    onclick: () => set(parisOnly ? { location: [], contract: [] } : { location: ['Paris area'], contract: ['Internship'] }),
+  }, [icon('globe'), 'Paris internships', parisOnly ? el('span', { className: 'pill-x' }, icon('x')) : '']) : '';
   $('filterBar').replaceChildren(
     stepPop,
     view === 'discover' ? '' : sortPop,
     moreBtn,
+    parisBtn,
     any ? el('button', { type: 'button', className: 'clear-all', onclick: () => { filters = {}; saveFilters(); } }, [`Clear · ${shown} of ${pool.length}`]) : '',
     moreFilters ? el('div', { className: 'filter-panel' }, [byKey.location, byKey.contract, matchPop, ...secondary.map(([p]) => p), ...hiddenPills]) : '',
   );
@@ -742,14 +762,22 @@ $('viewBoard').addEventListener('click', () => setView('board'));
 
 // ---- Discover: like or pass new offers, one at a time ----
 
+let lastDeckSig = '';
+let deckPending = false; // a redraw skipped during a gesture, done right after it
+
+// Best matches first; offers no longer online last.
+// With the Paris focus on (Preferences), Paris-area internships move up; the others stay in the pile.
+const deckOrder = (a, b) => Boolean(a.expired) - Boolean(b.expired)
+  || (matchScore(b, profile).score + focusBonus(b, profile)) - (matchScore(a, profile).score + focusBonus(a, profile));
+
 function renderDiscover() {
   const q = $('search').value.trim().toLowerCase();
   const deck = all
     .filter((i) => i.status === 'New')
     .filter((i) => passesFilters(i, filters))
     .filter((i) => !q || [i.title, i.company, i.location, i.source].join(' ').toLowerCase().includes(q))
-    .sort((a, b) => matchScore(b, profile).score - matchScore(a, profile).score);
-  const undo = el('button', { type: 'button', className: 'round undo', title: 'Undo (U)', disabled: !lastSwipe, onclick: undoSwipe }, icon('undo'));
+    .sort(deckOrder);
+  const undo = el('button', { type: 'button', className: 'deck-btn icon-only', title: 'Undo (U)', ariaLabel: 'Undo', disabled: !lastSwipe, onclick: undoSwipe }, icon('undo'));
   if (!deck.length && all.some((i) => i.status === 'New')) {
     $('discover').replaceChildren(el('div', { className: 'deck-empty' }, [
       el('div', { className: 'deck-empty-icon' }, icon('filter')),
@@ -769,31 +797,87 @@ function renderDiscover() {
     return;
   }
   const [top, ...rest] = deck;
+  // Never rebuilt while a card is dragged or flying away (it would jump back), nor when nothing you see changed.
+  if (swiping || document.querySelector('#topCard.dragging')) { deckPending = true; return; }
+  const deckSig = JSON.stringify([deck.length, rest.slice(0, 2).map((x) => x.id), Boolean(lastSwipe), swipeCount() < 5, profile.focusParis,
+    ['id', 'title', 'company', 'location', 'description', 'expired', 'describeError', 'startDate', 'startAsap', 'duration', 'logo', 'contract', 'postedAt', 'early']
+      .map((k) => top[k]), loading.has(top.id), matchScore(top, profile).score, similarOffer(top, all)?.id || '']);
+  if (deckSig === lastDeckSig && $('topCard')) return;
+  lastDeckSig = deckSig;
+  deckPending = false;
   if (!top.description && !top.describedAt) loadDescription(top, true);
   if (rest[0] && !rest[0].description && !rest[0].describedAt) loadDescription(rest[0], true);
+  // The card you see (and the next one) is checked again on its site if it wasn't today: still online?
+  [top, rest[0]].filter((i) => i && needsCheck(i)).forEach((i) => loadDescription(i, true));
   $('discover').replaceChildren(
-    el('p', { className: 'deck-count muted', textContent: `${deck.length} offer${deck.length > 1 ? 's' : ''} to review · best matches first` }),
+    el('p', { className: 'deck-count muted', textContent: `${deck.length} offer${deck.length > 1 ? 's' : ''} to review · ${profile.focusParis !== false ? 'Paris internships first, then best matches' : 'best matches first'}` }),
     el('div', { className: 'deck' }, [
-      el('div', { className: 'swipe-hint left' }, [icon('arrowLeft'), ' Dislike']),
-      el('div', { className: 'swipe-hint right' }, ['Like ', icon('arrowRight')]),
       ...rest.slice(0, 2).reverse().map((_, n, arr) => el('div', { className: `ghost-card g${arr.length - n}` })),
       swipeCard(top),
     ]),
-    el('div', { className: 'deck-actions' }, [
-      el('button', { type: 'button', className: 'round pass', title: 'Dislike (swipe left or ←)', onclick: () => swipe(top, 'pass') }, icon('x')),
+    el('div', { className: 'deck-actions' }, el('div', { className: 'deck-dock' }, [
+      el('button', { type: 'button', className: 'deck-btn pass', title: 'Pass (swipe left or ←)', onclick: () => swipe(top, 'pass') }, [icon('x'), 'Pass', el('span', { className: 'deck-key', textContent: '←' })]),
       undo,
-      el('button', { type: 'button', className: 'round info', title: 'Open the offer’s window', onclick: () => openWorkspace(top) }, icon('info')),
-      el('button', { type: 'button', className: 'round like', title: 'Like (swipe right or →)', onclick: () => swipe(top, 'like') }, icon('heart-filled')),
-    ]),
+      el('button', { type: 'button', className: 'deck-btn icon-only', title: 'Open the offer’s window (I)', ariaLabel: 'Details', onclick: () => openWorkspace(top) }, icon('info')),
+      el('button', { type: 'button', className: 'deck-btn like primary', title: 'Like (swipe right or →)', onclick: () => swipe(top, 'like') }, [icon('heart-filled'), 'Like', el('span', { className: 'deck-key', textContent: '→' })]),
+    ])),
     swipeCount() < 5 ? el('p', { className: 'deck-help muted', textContent: 'Swipe with two fingers on the trackpad, drag the card, or use the ← → keys.' }) : '',
   );
 }
 
+// Above an offer: it was taken down, or you already sorted the same job (reposted with a new link).
+function offerAlerts(i) {
+  const out = [];
+  if (i.expired) {
+    out.push(el('div', { className: 'offer-alert gone' }, [icon('alert'),
+      el('span', { textContent: `This offer is no longer online${i.expiredAt ? ` (seen ${formatDate(isoDate(new Date(i.expiredAt)))})` : ''}.` })]));
+  }
+  const twin = similarOffer(i, all) || similarOffer(i, archivedList);
+  if (twin) {
+    const when = formatDate(isoDate(new Date((twin.history || []).at(-1)?.at || twin.updatedAt || twin.createdAt)));
+    const passed = twin.status === 'Not interested';
+    out.push(el('div', { className: 'offer-alert seen' + (passed ? ' passed' : '') }, [icon(passed ? 'x' : 'heart-filled'),
+      el('span', { textContent: passed
+        ? `You passed on this job on ${when}. It’s back with a new link.`
+        : `Already in your list (${twin.status}) since ${when}: probably the same job.` }),
+      el('button', { type: 'button', className: 'link', textContent: 'See it', onclick: () => openWorkspace(twin) })]));
+  }
+  return out;
+}
+
+// The match reasons in plain words: what fits, and what doesn't.
+function matchReasons(why) {
+  const bad = /^(Avoid|Seniority|Location not in your list)/;
+  const plain = (w) => w.replace(/^Role: /, '').replace(/^Plus: /, '').replace(/^Learned: You/, 'you');
+  return {
+    good: why.filter((w) => !bad.test(w) && w !== 'Internship / junior').map(plain),
+    bad: why.filter((w) => bad.test(w)).map((w) => w.replace(/^Avoid: /, 'avoid word: ').replace(/^Seniority: /, '')),
+  };
+}
+
+// The key facts as a small spec sheet: start, duration, contract, posted.
+function specSheet(i) {
+  const contract = contractOf(i);
+  const fixedTerm = !contract || /intern|apprentice|vie|fixed|cdd|temporary/i.test(contract);
+  const start = startLabel(i) || (i.description || i.describedAt ? 'Not given' : '…');
+  const cells = [
+    ['calendar', 'Start', start, !startLabel(i)],
+    fixedTerm && i.duration ? ['clock', 'Duration', i.duration, false] : null,
+    contract ? ['briefcase', 'Contract', contract, false] : null,
+    i.postedAt ? ['clock', 'Posted', postedLabel(i.postedAt).replace(/^Posted /, ''), false] : null,
+  ].filter(Boolean);
+  return el('dl', { className: 'spec' }, cells.map(([ic, label, value, empty]) => el('div', { className: 'spec-cell' + (empty ? ' is-missing' : '') }, [
+    el('dt', {}, [icon(ic), label]),
+    el('dd', { textContent: value }),
+  ])));
+}
+
 function swipeCard(i) {
   const { score, why } = matchScore(i, profile);
+  const reasons = matchReasons(why);
   const tag = companyTag(i);
-  const like = el('div', { className: 'stamp stamp-like', textContent: 'LIKE' });
-  const nope = el('div', { className: 'stamp stamp-nope', textContent: 'DISLIKE' });
+  const like = el('div', { className: 'stamp stamp-like' }, el('span', { className: 'stamp-label' }, [icon('heart-filled'), 'Like']));
+  const nope = el('div', { className: 'stamp stamp-nope' }, el('span', { className: 'stamp-label' }, [icon('x'), 'Pass']));
   let body;
   if (i.description) {
     // The sentence that says what the job is comes first, then the full text.
@@ -802,19 +886,15 @@ function swipeCard(i) {
       lead ? el('p', { className: 'swipe-lead', textContent: lead }) : '',
       el('div', { className: 'swipe-full', textContent: cleanDescription(i.description) }),
     ]);
+  } else if (i.expired) {
+    body = '';
   } else {
-    // No description yet: what we already know, in one line.
-    const role = matchScore(i, profile).why.find((w) => w.startsWith('Role: '))?.slice(6);
-    const glance = [role ? `${role} role` : contractOf(i) || 'Offer', i.company && `at ${i.company}`, i.location && `in ${i.location}`].filter(Boolean).join(' ');
     const waiting = !i.describeError || /slow down|paused|didn.t answer|limit/i.test(i.describeError);
-    body = el('div', {}, [
-      el('p', { className: 'swipe-lead glance', textContent: `${glance}.` }),
-      loading.has(i.id)
-        ? el('p', { className: 'desc-note', textContent: 'Loading the description…' })
-        : el('p', { className: 'desc-note' }, waiting
-          ? ['The full description will appear here by itself in a few minutes. ', el('button', { type: 'button', className: 'link', textContent: 'Try now', onclick: () => loadDescription(i) })]
-          : ['The description couldn’t be read from this site. ', el('a', { href: i.url, target: '_blank', rel: 'noopener', textContent: 'Read it on the site' })]),
-    ]);
+    body = loading.has(i.id)
+      ? el('p', { className: 'desc-note', textContent: 'Loading the description…' })
+      : el('p', { className: 'desc-note' }, waiting
+        ? ['The full description will appear here by itself in a few minutes. ', el('button', { type: 'button', className: 'link', textContent: 'Try now', onclick: () => loadDescription(i) })]
+        : ['The description couldn’t be read from this site. ', el('a', { href: i.url, target: '_blank', rel: 'noopener', textContent: 'Read it on the site' })]);
   }
   const card = el('article', { className: 'swipe-card', id: 'topCard' }, [
     like, nope,
@@ -823,15 +903,19 @@ function swipeCard(i) {
       el('div', { className: 'swipe-score' }, [el('span', { className: `score ${score >= 60 ? 'high' : score >= profile.minScore ? 'mid' : 'low'}`, textContent: `${score}% match` })]),
     ]),
     el('h2', { className: 'swipe-title', textContent: i.title || '(no title)' }),
-    el('div', { className: 'swipe-company', textContent: [i.company, i.location].filter(Boolean).join(' · ') }),
-    el('div', { className: 'facts-line' }, [
+    el('div', { className: 'swipe-company' }, [
+      el('span', { textContent: i.company || '' }),
+      i.location ? el('span', { className: 'swipe-place' }, [icon('globe'), i.location]) : '',
       tag ? el('span', { className: `kind kind-${slug(tag)}`, textContent: tag }) : '',
       i.industry ? el('span', { className: 'fact', textContent: i.industry }) : '',
-      contractOf(i) ? el('span', { className: `fact contract-${slug(contractOf(i))}`, textContent: contractOf(i) }) : '',
-      i.postedAt ? el('span', { className: 'fact', textContent: postedLabel(i.postedAt) }) : '',
       i.early ? el('span', { className: 'fact early' }, [icon('bolt'), 'Early applicant']) : '',
     ]),
-    why.length ? el('ul', { className: 'why' }, why.map((w) => el('li', { textContent: w }))) : '',
+    specSheet(i),
+    ...offerAlerts(i),
+    reasons.good.length || reasons.bad.length ? el('div', { className: 'why-line' }, [
+      reasons.good.length ? el('p', {}, [icon('sparkles'), el('b', { textContent: 'Why it fits ' }), reasons.good.join(' · ')]) : '',
+      reasons.bad.length ? el('p', { className: 'why-bad' }, [icon('alert'), el('b', { textContent: 'But ' }), reasons.bad.join(' · ')]) : '',
+    ]) : '',
     body,
   ]);
   // Swipe the card: drag it, or two-finger swipe on the trackpad. Right = like, left = dislike.
@@ -850,6 +934,7 @@ function swipeCard(i) {
     dx = 0;
     card.style.transform = '';
     like.style.opacity = nope.style.opacity = 0;
+    if (deckPending) renderTable();
   };
   let wheelTimer = null;
   card.addEventListener('wheel', (e) => {
@@ -890,7 +975,7 @@ function swipeCount() {
 
 let swiping = false;
 async function swipe(i, choice) {
-  if (swiping) return;
+  if (swiping || all.find((x) => x.id === i.id)?.status !== 'New') return; // already sorted (quick double click)
   swiping = true;
   const card = $('topCard');
   if (card) {
@@ -902,8 +987,14 @@ async function swipe(i, choice) {
     localStorage.setItem('swipes', String(swipeCount() + 1));
   } catch {}
   await new Promise((r) => setTimeout(r, 260));
-  await saveInternship({ ...i, status: choice === 'like' ? 'To apply' : 'Not interested', likedAt: choice === 'like' ? new Date().toISOString() : '' });
+  const status = choice === 'like' ? 'To apply' : 'Not interested';
+  const latest = (await loadAll()).find((x) => x.id === i.id) || i; // what the background may have added meanwhile
+  await saveInternship({ ...latest, status, likedAt: choice === 'like' ? new Date().toISOString() : '' });
+  // The next card right away, without waiting for the saved list to come back.
+  const local = all.find((x) => x.id === i.id);
+  if (local) local.status = status;
   swiping = false;
+  renderTable();
   if (choice === 'like') {
     toast(`${i.company || 'Offer'} added to your board. Your tailored CV and cover letter are ready.`, [
       ['Open CV', () => openDoc(i, 'cv')],
@@ -926,10 +1017,13 @@ async function undoSwipe() {
 
 document.addEventListener('keydown', (e) => {
   if (view !== 'discover' || document.querySelector('dialog[open]') || /input|textarea|select/i.test(e.target.tagName)) return;
-  const top = all.filter((i) => i.status === 'New' && passesFilters(i, filters)).sort((a, b) => matchScore(b, profile).score - matchScore(a, profile).score)[0];
+  const q = $('search').value.trim().toLowerCase();
+  const top = all.filter((i) => i.status === 'New' && passesFilters(i, filters))
+    .filter((i) => !q || [i.title, i.company, i.location, i.source].join(' ').toLowerCase().includes(q)).sort(deckOrder)[0];
   if (e.key === 'ArrowRight' && top) swipe(top, 'like');
   else if (e.key === 'ArrowLeft' && top) swipe(top, 'pass');
   else if (e.key.toLowerCase() === 'u') undoSwipe();
+  else if (e.key.toLowerCase() === 'i' && top) openWorkspace(top);
 });
 
 // ---- Suggestions (learned from your swipes) ----
@@ -1191,6 +1285,7 @@ function renderWorkspace() {
     el('div', { className: 'ws-title' }, [
       el('h2', { textContent: i.title || '(no title)' }),
       el('div', { className: 'muted', textContent: [i.company, i.location, i.source].filter(Boolean).join(' · ') }),
+      ...offerAlerts(i),
       el('div', { className: 'facts-line' }, [
         tag ? el('span', { className: `kind kind-${slug(tag)}`, textContent: tag }) : '',
         i.industry ? el('span', { className: 'fact', textContent: i.industry }) : '',
@@ -1587,6 +1682,7 @@ $('wsTabs').addEventListener('click', (e) => {
   wsTab = tab;
   renderWorkspace();
   if (tab === 'offer' && !ws.description && !ws.describedAt) loadDescription(ws);
+  else if (tab === 'offer' && needsCheck(ws)) loadDescription(ws, true); // still online?
 });
 $('wsClose').addEventListener('click', () => $('workspace').close());
 $('wsDelete').addEventListener('click', () => {
@@ -1691,7 +1787,7 @@ $('restoreFile').addEventListener('change', async (e) => {
 
 // Sites that can only be read inside a real browser window: not checked automatically.
 const MANUAL_SITES = [
-  ['Station F', 'stationf.co'], ['JobTeaser', 'jobteaser.com'], ['Welcome to the Jungle', 'welcometothejungle.com'],
+  ['Station F', 'stationf.co'], ['JobTeaser', 'jobteaser.com'],
   ['Microsoft careers', 'microsoft.com'], ['Meta careers', 'metacareers.com'], ['Salesforce careers', 'salesforce.com'],
 ];
 
@@ -1930,6 +2026,8 @@ const profileTabs = {
       pSection('Learning', 'Swipely compares what you like and pass on, and adjusts the score by up to 20 points.',
         pCheck('Learn from my likes and passes', 'The score adjusts itself', pDraft.learn !== false, (v) => (pDraft.learn = v)),
         learnedPanel(profile)),
+      pSection('Focus', 'In Discover, internships in Paris and around come before the others. The others stay in the pile, further down.',
+        pCheck('Paris internships first', 'Their place in the pile goes up; their match score stays the same', pDraft.focusParis !== false, (v) => (pDraft.focusParis = v))),
       pSection('Weak matches', 'Offers below this score can be left out of the new offers.',
         pCheck('Skip new offers scoring under', '', pDraft.hideWeak, (v) => (pDraft.hideWeak = v)),
         el('div', { className: 'range-row' }, [range, value])),

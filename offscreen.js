@@ -17,8 +17,10 @@ function describeDocument(doc) {
   }
   if (job) {
     out.description = htmlText(job.description || '', true);
+    out.title = htmlText(job.title || '');
     const org = [].concat(job.hiringOrganization || [])[0];
     if (org && typeof org === 'object') {
+      out.company = htmlText(org.name || '');
       const logo = [].concat(org.logo || [])[0];
       out.logo = typeof logo === 'string' ? logo : logo?.url || '';
       out.companyUrl = [].concat(org.sameAs || org.url || [])[0] || '';
@@ -28,6 +30,13 @@ function describeDocument(doc) {
     const a = [].concat(job.jobLocation || [])[0]?.address;
     out.location = typeof a === 'string' ? a : [a?.addressLocality, a?.addressCountry?.name || a?.addressCountry].filter((x) => typeof x === 'string' && x).join(', ');
   }
+  // The job was taken down: past its end date, the page says so, or (Welcome to the Jungle) the link
+  // now opens a page with no job on it.
+  const until = job?.validThrough ? new Date(job.validThrough) : null;
+  const banner = [...doc.querySelectorAll('[class*="danger" i], [class*="alert" i], [class*="banner" i], [class*="closed" i], [role="alert"], h1, h2')]
+    .map((e) => e.textContent).join(' ');
+  if ((until && until < new Date()) || GONE_WORDS.test(banner)
+    || (!job && /welcometothejungle\.com$/.test(new URL(doc.baseURI).hostname) && /\/jobs\//.test(doc.baseURI))) out.expired = true;
   if (!out.description) {
     // No structured data: the main text block of the page.
     const main = doc.querySelector('[class*="job-description" i], [class*="jobdescription" i], [id*="job-description" i], [class*="description" i], main, article');

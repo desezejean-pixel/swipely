@@ -3,8 +3,9 @@
 **Swipe through internships and jobs that fit your CV, then track every application.**
 A free Chrome extension. Everything stays on your computer: no account, no server, no paid service.
 
-- **Discover:** new offers arrive every day from LinkedIn, big tech career sites (Google, Amazon, Apple, Nvidia, Stripe), VC Careers and startups you follow. Swipe right to like, left to pass.
+- **Discover:** new offers arrive every day from LinkedIn, big tech career sites (Google, Amazon, Apple, Nvidia, Stripe), VC Careers, Welcome to the Jungle and startups you follow. Swipe right to like, left to pass.
 - **Match score:** every offer gets a score from 0 to 100 against your CV and preferences, and the score learns from your swipes.
+- **Clear cards:** start date, duration, contract and posting date at a glance; offers taken down are flagged "no longer online", and a job you already passed on or liked is pointed out when it comes back. Paris internships come first (Preferences → Focus).
 - **Board:** drag each application through the steps (To apply → Applied → Interview → Offer). Red dots tell you when something needs doing.
 - **Your documents:** a CV and a cover letter tailored to each offer you like, in French or English, ready to save as PDF.
 - **Messages and people:** ready-to-send LinkedIn notes and e-mails, and one-click searches to find someone at the company to talk to.
@@ -56,7 +57,8 @@ On a page listing several offers, a blue line offers to add several at once.
 - **Your data stays in your Chrome.** Removing the extension erases it, so use **⋯ → Backup** now and then (and **Restore backup** to load it back).
 - **LinkedIn is read logged out**, slowly (at most about 80 requests a day), so your LinkedIn account is never used. If LinkedIn asks to slow down, Swipely pauses for 3 hours.
 - **No window or tab ever opens by itself:** sites are read invisibly in the background. Chrome must be open for new offers to arrive.
-- **Some sites can't be read automatically** (Welcome to the Jungle searches, JobTeaser, Station F, Microsoft, Meta, Salesforce): save their offers with the toolbar button instead.
+- **Welcome to the Jungle** is checked every day through the list of offers it publishes for search engines (its search pages are closed to robots).
+- **Some sites can't be read automatically** (JobTeaser, Station F, Microsoft, Meta, Salesforce): save their offers with the toolbar button instead.
 - **Cover letters with AI:** if your computer supports Chrome's free built-in AI, **Improve with Chrome AI** rewrites your letter. Nothing is sent to a paid service.
 - **Better logos (optional):** a free key from [logo.dev](https://www.logo.dev) gives exact company logos: **⋯ → Preferences → Logos**.
 

@@ -146,7 +146,7 @@ async function archiveStale() {
 }
 
 // Extra facts kept from search results when the site shows them.
-const OFFER_EXTRAS = ['logo', 'logoFrom', 'companyUrl', 'postedAt', 'early', 'applicants', 'industry', 'description'];
+const OFFER_EXTRAS = ['logo', 'logoFrom', 'companyUrl', 'postedAt', 'early', 'applicants', 'industry', 'description', 'titleFromLink'];
 
 // Internship / Apprenticeship / VIE / Full-time… from a contract label or an offer title.
 function normContract(text) {
@@ -187,6 +187,30 @@ function dupKey(item) {
     .replace(/^\s*(stage|stagiaire|internship|intern|alternance)\s*[-–:|]\s*/, '')
     .replace(/[^a-z0-9]/g, '');
   return company && title ? `${company}|${title}` : '';
+}
+
+// The same job seen again (reposted with a new link, or its title written a bit differently): same company and
+// the same title words, leaving out dates, contract and gender marks. A title rebuilt from a link may be cut short.
+const TITLE_NOISE = new Set(norm('the and les des pour une with stage stagiaire intern internship alternance alternant apprenti cdi cdd vie fin etudes months month mois h/f f/h m/f '
+  + 'janvier fevrier mars avril mai juin juillet aout septembre octobre novembre decembre jan feb mar apr may jun jul aug sep sept oct nov dec january february march april june july august september october november december '
+  + 'summer fall winter spring ete automne hiver printemps en de du la le of in at to au chez').split(/\s+/));
+function titleWords(item) {
+  return new Set(norm(String(item.title || '').replace(/&amp;/g, ' ')).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !/^\d+$/.test(w) && !TITLE_NOISE.has(w)));
+}
+function similarOffer(item, list) {
+  const company = dupKey({ ...item, title: 'x' });
+  const mine = titleWords(item);
+  if (!company || mine.size < 2) return null;
+  return list.find((o) => {
+    if (o.id === item.id || o.status === 'New' || dupKey({ ...o, title: 'x' }) !== company) return false;
+    // Two cities named: they must be the same (one job in Madrid, another in Marseille).
+    const city = (x) => norm(x.location || '').split(/[,(]/)[0].trim();
+    if (city(item) && city(o) && city(item) !== city(o)) return false;
+    const theirs = titleWords(o);
+    const [small, big] = mine.size <= theirs.size ? [mine, theirs] : [theirs, mine];
+    if (![...small].every((w) => big.has(w))) return false;
+    return small.size === big.size || (small.size >= 3 && Boolean(item.titleFromLink || o.titleFromLink));
+  }) || null;
 }
 
 async function addMany(offers, fields = {}) {
@@ -258,14 +282,26 @@ const MONTHS = {
 };
 const MONTH_RE = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|');
 
-// The first date written in a short piece of text: 15/01/2027, 15 janvier 2027, January 15, 2027, janvier 2027…
-function firstDate(text) {
+// Full month names (no abbreviations, and not "may"): the only ones read without a year.
+const FULL_MONTHS = 'janvier|january|fevrier|february|mars|march|avril|april|mai|juin|june|juillet|july|aout|august|septembre|september|octobre|october|novembre|november|decembre|december';
+const SEASONS = { summer: 6, ete: 6, fall: 9, autumn: 9, automne: 9, winter: 1, hiver: 1, spring: 3, printemps: 3 };
+
+// The first date written in a short piece of text: 15/01/2027, 15 janvier 2027, January 15, 2027, janvier 2027,
+// Summer 2027… With loose, also a month alone ("from January": the next January).
+function firstDate(text, loose = false) {
   const iso = (y, m, d) => (y >= 2025 && y <= 2030 && m >= 1 && m <= 12 && d >= 1 && d <= 31 ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : '');
   const found = [
     [/\b(\d{1,2})[/.-](\d{1,2})[/.-](20\d{2})\b/, (m) => iso(+m[3], +m[2], +m[1])],
     [new RegExp(`\\b(\\d{1,2})(?:er|st|nd|rd|th)?\\s+(${MONTH_RE})\\.?\\s+(20\\d{2})\\b`), (m) => iso(+m[3], MONTHS[m[2]], +m[1])],
     [new RegExp(`\\b(${MONTH_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b`), (m) => iso(+m[3], MONTHS[m[1]], +m[2])],
     [new RegExp(`\\b(${MONTH_RE})\\.?\\s+(20\\d{2})\\b`), (m) => iso(+m[2], MONTHS[m[1]], 1)],
+    [new RegExp(`\\b(${Object.keys(SEASONS).join('|')})\\s+(20\\d{2})\\b`), (m) => iso(+m[2], SEASONS[m[1]], 1)],
+    // "januaryfor": words sometimes come glued together in descriptions.
+    ...(loose ? [[new RegExp(`\\b(${FULL_MONTHS})(?![a-z])|\\b(${FULL_MONTHS})(?=for|to|in)`), (m) => {
+      const month = MONTHS[m[1] || m[2]];
+      const now = new Date();
+      return iso(now.getFullYear() + (month < now.getMonth() + 1 ? 1 : 0), month, 1);
+    }]] : []),
   ].map(([re, toIso]) => {
     const m = text.match(re);
     return m ? { at: m.index, date: toIso(m) } : null;
@@ -275,28 +311,48 @@ function firstDate(text) {
 }
 
 // Deadline and start date found near words like "deadline", "date limite", "start date", "à partir de"…
+const START_WORDS = /(start date|starting date|starting( in| on| from)?|starts?( in| on| from)?|date de debut|debut|date de demarrage|demarrage|prise de poste|a partir de|des le|des |a pourvoir|from|beginning( of| in)?|commencing|available( from)?|disponible|join(ing)?( us| the team| our [a-z]+ team)?|rejoindre|rentree)/g;
+const START_ASAP = /(des que possible|asap|as soon as possible|immediate start|start immediately|demarrage immediat|prise de poste immediate|des maintenant)/;
+
 function parseOfferDates(text) {
   const t = norm(text);
-  const near = (re) => {
+  const near = (re, loose = false) => {
     for (const hit of t.matchAll(re)) {
-      const d = firstDate(t.slice(hit.index + hit[0].length, hit.index + hit[0].length + 60));
+      const after = hit.index + hit[0].length;
+      // A full date may be a little further; a month alone must follow closely.
+      const d = firstDate(t.slice(after, after + 60)) || (loose ? firstDate(t.slice(after, after + 22), true) : '');
       if (d) return d;
     }
     return '';
   };
   return {
     deadline: near(/(deadline|apply (by|before)|applications? (close|due)|closing date|date limite|candidatures? (jusqu'au|avant le)|avant le|jusqu'au)/g),
-    startDate: near(/(start date|starting date|starting( in| on)?|start( in| on)|date de debut|date de demarrage|demarrage|prise de poste|a partir de|des le|a pourvoir)/g),
+    startDate: near(START_WORDS, true),
+    startAsap: START_ASAP.test(t),
   };
 }
 
+// "Jan 2027" for a start known to the month, "15 Jan 2027" otherwise; "ASAP"; or ''.
+function startLabel(item) {
+  if (item.startDate) {
+    return item.startDate.endsWith('-01')
+      ? new Date(`${item.startDate}T12:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+      : formatDate(item.startDate);
+  }
+  return item.startAsap ? 'ASAP' : '';
+}
+
 // Only the dates the offer doesn't have yet (a deadline already passed isn't kept).
+// The title counts too ("Intern - Summer 2027", "(6 months, Jan. 2027)").
 function missingDates(item) {
-  if (!item.description) return {};
-  const found = parseOfferDates(item.description);
   const out = {};
+  const fromTitle = firstDate(norm(item.title || ''));
+  if (!item.startDate && fromTitle && fromTitle >= today()) out.startDate = fromTitle;
+  if (!item.description) return out;
+  const found = parseOfferDates(item.description);
   if (found.deadline && !item.deadline && found.deadline >= today()) out.deadline = found.deadline;
-  if (found.startDate && !item.startDate && found.startDate >= today()) out.startDate = found.startDate;
+  if (found.startDate && !item.startDate && !out.startDate && found.startDate >= today()) out.startDate = found.startDate;
+  if (found.startAsap && !item.startDate && !out.startDate && !item.startAsap) out.startAsap = true;
   return out;
 }
 
@@ -331,6 +387,7 @@ function daysInStep(item) {
 // "An action to do", like the red badge on Apple Messages: what to do next, or '' if nothing.
 function attention(item) {
   if (item.archived) return '';
+  if (item.expired && ['New', 'To apply'].includes(item.status)) return 'No longer online';
   const t = today();
   const days = daysInStep(item);
   if (item.status === 'To apply' && days >= 3 && !(item.deadline && item.deadline < t)) return item.deadline ? 'Apply before the deadline' : 'Apply, or let go';
@@ -395,6 +452,9 @@ function htmlText(html, keepLines = false) {
 }
 
 // LinkedIn's public page for one offer: the description and the criteria (seniority, type…).
+// Words a job site shows on an offer that was taken down.
+const GONE_WORDS = /n.est plus disponible|n.est plus en ligne|offre (a )?expir|no longer (available|accepting applications|open)|job (has )?expired|position (has been )?filled|this job is closed|cette offre est (cl[oô]tur|ferm)/i;
+
 function parseLinkedinJob(html) {
   const desc = html.match(/show-more-less-html__markup[^>]*>([\s\S]*?)<\/div>/)?.[1];
   const criteria = [...html.matchAll(/job-criteria-subheader">([\s\S]*?)<\/h3>\s*<span[^>]*>([\s\S]*?)<\/span>/g)]
@@ -412,6 +472,7 @@ function parseLinkedinJob(html) {
     postedAgo: ago,
     logo: htmlText(html.match(/top-card-layout__entity-image[\s\S]{0,400}?data-delayed-url="([^"]+)"/)?.[1] || html.match(/data-delayed-url="(https:\/\/media\.licdn\.com\/[^"]*company-logo[^"]*)"/)?.[1] || ''),
     companyUrl: html.match(/topcard__org-name-link[^>]*href="([^"?]+)/)?.[1] || '',
+    expired: /closed-job|No longer accepting applications/i.test(html),
   };
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== '' && v !== false));
 }
@@ -470,6 +531,7 @@ const DEFAULT_PROFILE = {
   hideWeak: false,
   minScore: 40,
   learn: true, // the score also learns from your likes and passes
+  focusParis: true, // in Discover, Paris-area internships come first (the others stay, below)
   logoDevKey: '', // free publishable key from logo.dev (starts with pk_)
 };
 
@@ -572,6 +634,12 @@ function buildTaste(items, protect = new Set()) {
   return { ready: true, nLiked: liked.length, nPassed: passed.length, w, top: top.sort((a, b) => Math.abs(b.w) - Math.abs(a.w)) };
 }
 
+// The profile plus what your likes and passes taught (unless learning is turned off in Preferences).
+function withTaste(profile, items) {
+  const roleWords = new Set(profile.roles.flatMap((r) => words(r.keywords)).flatMap((k) => norm(k).split(/\s+/)));
+  return { ...profile, taste: profile.learn === false ? null : buildTaste(items, roleWords) };
+}
+
 const TASTE_NAMES = { t: (v) => `“${v}”`, c: (v) => v, k: (v) => v, ct: (v) => v, l: (v) => v, s: (v) => v };
 function tasteLabel(key) {
   const [type, ...rest] = key.split(':');
@@ -649,6 +717,15 @@ const REGION_WORDS = {
   'United Kingdom': ['united kingdom', 'uk', 'london'], 'USA & Canada': ['united states', 'usa', 'canada', 'new york'],
   'Latin America': ['latin america', 'latam', 'mexico', 'brazil', 'chile'], Remote: ['remote', 'télétravail'],
 };
+// Discover's order: a Paris-area internship goes up by 15 points (its match score itself doesn't change).
+const FOCUS_BONUS = 15;
+function isParisInternship(item) {
+  return locationGroups(item).includes('Paris area') && /intern/i.test(contractOf(item) || '');
+}
+function focusBonus(item, p) {
+  return p.focusParis !== false && isParisInternship(item) ? FOCUS_BONUS : 0;
+}
+
 function wantedRegion(item, p) {
   const places = norm(p.places);
   return locationGroups(item).some((g) => (REGION_WORDS[g] || []).some((w) => has(places, w)));
@@ -691,12 +768,38 @@ const VC_BOARD_QUERIES = ['intern', 'analyst', 'associate'];
 // Big tech careers sites (internships in France), plus LinkedIn filtered on big tech companies for abroad
 // and for Microsoft / Meta, whose own sites can't be read automatically.
 const BIG_TECH_LINKEDIN_IDS = '1441,1586,162479,1035,10667,3608,3185,2135371'; // Google, Amazon, Apple, Microsoft, Meta, Nvidia, Salesforce, Stripe
+// Offers written in another language than French or English (German, Spanish, Chinese…) are left out.
+// Judged on the description's small everyday words; without a description (often the case on LinkedIn), on the title.
+const FR_WORDS = new Set('le la les des vous nous et pour avec une du sur au est dans qui aux ses votre vos notre nos'.split(' '));
+const EN_WORDS = new Set('the and you we for with our your are to of is will this that from be'.split(' '));
+const OTHER_WORDS = new Set(('der die das und ist wir mit fur ein eine einen zu auf bei von nicht ihre ihr sind werden oder auch sowie ' // German
+  + 'el los las y con para del una por como su sus nuestro nuestra ' // Spanish
+  + 'gli della delle di che sono nel alla ' // Italian
+  + 'het een van voor wij zijn niet ook onze ' // Dutch
+  + 'em nao voce nossa um uma dos').split(' ')); // Portuguese
+// Job titles that give the language away: Praktikum, Werkstudent, Becario, Prácticas, Stagista, Estágio, Stagiair…
+const FOREIGN_TITLE = /(^|[^a-z])(praktikum|pflichtpraktikum|praktikant(in)?|werkstudent(in)?|abschlussarbeit|masterarbeit|bachelorarbeit|mitarbeiter(in)?|berater(in)?|vertrieb|einkauf|im bereich|und|fur|becari[oa]|practicas|estudiante|ventas|analista|asistente|stagista|tirocini(o|ante)|neolaureat[oa]|laureand[oa]|estagi(o|ari[oa])|stagiair|afstudeerstage|medewerker|praktykant(ka)?|praktyki|staz)([^a-z]|$)/;
+const mostlyNonLatin = (text, min) => {
+  const letters = String(text || '').match(/\p{L}/gu) || [];
+  return letters.length >= min && letters.filter((c) => !/\p{Script=Latin}/u.test(c)).length > letters.length * 0.3;
+};
+function readableLanguage(item) {
+  const text = String(item.description || '');
+  if (mostlyNonLatin(text, 100)) return false;
+  const list = norm(text).split(/[^a-z]+/).filter(Boolean);
+  if (list.length < 40) return !mostlyNonLatin(item.title, 2) && !FOREIGN_TITLE.test(norm(item.title));
+  const count = (set) => list.filter((w) => set.has(w)).length;
+  const other = count(OTHER_WORDS);
+  return other < 8 || other <= 2 * Math.max(count(FR_WORDS), count(EN_WORDS));
+}
+
 // One gate for every search (LinkedIn, big tech, VC boards, followed startups): your Preferences decide what comes in.
 // strict = a broad source (any job of a company): the offer must clearly fit you, not only the place and level.
 function fitsPreferences(o, p, { strict = false } = {}) {
   const title = norm(o.title).replace('chief of staff', '');
   const contract = contractOf(o);
   if (words(p.avoid).some((k) => has(title, k))) return false; // your words to avoid
+  if (!readableLanguage(o)) return false; // neither French nor English
   if (/(^|[^a-z])(senior|sr|principal|head of|director|directeur|directrice|vp|manager ii|expert)([^a-z]|$)/.test(title)) return false;
   if (contract === 'Internship' && p.levels?.internship === false) return false;
   if (contract === 'Full-time' && p.levels?.entry === false) return false;
@@ -754,7 +857,29 @@ function profileSearches(p) {
   for (const q of VC_BOARD_QUERIES) {
     out.push({ name: `VC Careers · ${q}`, url: `https://venturecapitalcareers.com/jobs?query=${q}`, auto: true });
   }
-  return [...out, ...bigTechSearches(p)];
+  return [...out, ...bigTechSearches(p), WTTJ_SEARCH];
+}
+
+// Welcome to the Jungle closes its search pages to robots, but lists every offer in its sitemap for search engines.
+// The link spells out the company, the title and the city; the offer page gives the rest when its description is read.
+const WTTJ_SEARCH = { name: 'Welcome to the Jungle · new offers', url: 'https://www.welcometothejungle.com/sitemaps/index.xml.gz', auto: true };
+const capWords = (s) => s.replace(/(^|[\s-])\p{L}/gu, (c) => c.toUpperCase());
+function wttjOffer(url) {
+  const m = url.match(/\/(fr|en)\/companies\/([^/]+)\/jobs\/([^/?#]+)$/);
+  if (!m) return null;
+  const [slug, city = ''] = m[3].split('_');
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(slug)) return null; // no title in the link
+  const title = slug.replace(/-(h-f|f-h|x-f-m|f-h-x|h-f-x|f-m-x|m-f-d|m-w-d|w-m-d|f-m|m-f)(?=-|$)/g, '').replace(/-+/g, ' ').trim();
+  const place = capWords(city.replace(/-/g, ' ')).replace(/ /g, '-');
+  // A town not known as a region is in France on the French site ("Elancourt"); abroad ones say where they are.
+  const known = LOCATION_GROUPS.some(([, re]) => re.test(norm(place)));
+  return {
+    url,
+    title: title.charAt(0).toUpperCase() + title.slice(1),
+    company: capWords(m[2].replace(/-\d+$/, '').replace(/-/g, ' ')),
+    location: place && !known && m[1] === 'fr' ? `${place}, France` : place,
+    titleFromLink: true,
+  };
 }
 
 // ---- Cleaning descriptions ----
@@ -957,19 +1082,39 @@ function companyDomain(item) {
 }
 
 // Logo addresses to try in order; the page falls back to the next one if an image doesn't load.
-function logoCandidates(item, p = DEFAULT_PROFILE) {
+// The logo shown next to the offer in a job site's search results (a real company logo), or ''.
+function cardLogo(item) {
+  // Logo hosts of the job sites' search results: those images are the companies' real logos.
+  const knownLogoHost = /media\.licdn\.com\/.*company-logo|cdn-images\.welcometothejungle\.com|jobteasercdn\.com|assets\.cavuno\.com/.test(item.logo || '');
+  const fromCard = item.logo && !careersSiteDomain(item) && (item.logoFrom === 'card' || knownLogoHost || (!item.logoFrom && item.foundBy));
+  return fromCard ? item.logo : '';
+}
+
+// Company name → a real logo seen on any of its offers, for its offers that came without one.
+function companyLogoIndex(items) {
+  const index = new Map();
+  for (const i of items) {
+    const logo = cardLogo(i);
+    const name = norm(i.company || '');
+    if (logo && name && !index.has(name)) index.set(name, logo);
+  }
+  return index;
+}
+
+function logoCandidates(item, p = DEFAULT_PROFILE, sameCompany = null) {
   const key = (p.logoDevKey || '').trim();
   const dev = (path) => `https://img.logo.dev/${path}?token=${encodeURIComponent(key)}&size=128&format=png&retina=true&fallback=404`;
   // An offer from a company's own careers site (Apple, Amazon, Google…): the company is the site itself.
   const careers = careersSiteDomain(item);
   const domain = companyDomain(item) || careers;
-  // Logo hosts of the job sites' search results: those images are the companies' real logos.
-  const knownLogoHost = /media\.licdn\.com\/.*company-logo|cdn-images\.welcometothejungle\.com|jobteasercdn\.com|assets\.cavuno\.com/.test(item.logo || '');
-  const fromCard = item.logo && !careers && (item.logoFrom === 'card' || knownLogoHost || (!item.logoFrom && item.foundBy));
+  const fromCard = cardLogo(item);
   const list = [];
   if (key && domain) list.push(dev(encodeURIComponent(domain)));
   if (careers) list.push(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(careers)}&sz=128`);
-  if (fromCard) list.push(item.logo);
+  if (fromCard) list.push(fromCard);
+  // No logo with this offer: the one found on another offer from the same company.
+  const shared = !fromCard && !careers && item.company && sameCompany?.get(norm(item.company));
+  if (shared) list.push(shared);
   if (key && item.company) list.push(dev(`name/${encodeURIComponent(item.company)}`));
   // Logos read from an offer page are often the job site's or the school's, so they're not used.
   if (domain && !careers) list.push(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`);

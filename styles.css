@@ -634,9 +634,10 @@ html, body { overscroll-behavior-x: none; }
 .top { top: 10px; }
 
 /* ---- Messages at the bottom ---- */
-.toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+/* Bottom-right corner, so they never cover the Pass / Like buttons under the swipe card. */
+.toasts { position: fixed; right: 24px; bottom: 24px; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
 .toast {
-  pointer-events: auto; display: flex; align-items: center; gap: 14px; max-width: min(720px, 92vw); padding: 12px 12px 12px 18px; border-radius: 18px; font-size: 14px;
+  pointer-events: auto; display: flex; align-items: center; gap: 14px; max-width: min(420px, calc(100vw - 48px)); padding: 12px 12px 12px 18px; border-radius: 18px; font-size: 14px;
   color: var(--text); border: 1px solid var(--rim-soft); background: var(--shine), var(--glass-strong);
   backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
   box-shadow: inset 0 1px 0 var(--rim), 0 18px 50px rgba(15, 23, 42, 0.25);
@@ -1233,6 +1234,9 @@ button.person-avatar:hover .avatar-plus { opacity: 1; }
 .filter-toggle.more-filters .ic:last-child { width: 12px; height: 12px; margin: 0 0 0 4px; opacity: 0.6; }
 .filter-toggle.more-filters.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 9%, var(--solid-glass)); }
 .filter-panel { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; padding: 8px; border-radius: 14px; background: var(--glass-soft); border: 1px solid var(--rim-soft); }
+/* One line: Search · Step · Sort · Filters; the filters panel opens underneath, across the whole width. */
+.tools .filter-bar { display: contents; }
+.tools .filter-panel { flex: 1 0 100%; box-sizing: border-box; }
 
 /* ⋯ menu: settings first, then the rest */
 .more-menu .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 6px; }
@@ -1269,3 +1273,80 @@ details.all-steps .tip { margin: 8px 14px 12px; font-size: 13px; color: var(--mu
 .from-cv { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 14px; font-size: 13px; font-weight: 600; color: #6d28d9; background: rgba(124, 58, 237, 0.09); border: 1px solid rgba(124, 58, 237, 0.25); }
 .from-cv .ic { width: 15px; height: 15px; margin: 0; }
 @media (prefers-color-scheme: dark) { .from-cv { color: #c4b5fd; } }
+
+/* On an offer: taken down, or the same job already sorted */
+.offer-alert { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; padding: 9px 12px; border-radius: 12px; font-size: 14px; line-height: 1.35; border: 1px solid; }
+.offer-alert .ic { flex: none; width: 16px; height: 16px; margin: 0; }
+.offer-alert span { flex: 1; }
+.offer-alert .link { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.offer-alert.gone { color: #b91c1c; background: rgba(220, 38, 38, 0.08); border-color: rgba(220, 38, 38, 0.25); }
+.offer-alert.seen { color: #92400e; background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
+@media (prefers-color-scheme: dark) {
+  .offer-alert.gone { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.3); }
+  .offer-alert.seen { color: #fcd34d; background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.3); }
+}
+
+/* ======== Like / Pass: the site's own look (glass pills, accent gradient for the main action) ======== */
+.deck-actions { margin-top: 18px; }
+.deck-dock {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px; border-radius: 999px;
+  background: var(--shine), var(--glass-strong); border: 1px solid var(--rim-soft);
+  backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: inset 0 1px 0 var(--rim), 0 14px 40px rgba(30, 41, 90, 0.16);
+}
+button.deck-btn { display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 20px; font-size: 15px; font-weight: 600; }
+button.deck-btn .ic { width: 18px; height: 18px; margin: 0; }
+button.deck-btn.icon-only { width: 46px; padding: 0; justify-content: center; color: var(--muted); }
+button.deck-btn.pass .ic { color: var(--danger, #e11d48); }
+button.deck-btn.like { padding: 0 22px; }
+.deck-key { font-size: 12px; font-weight: 500; opacity: 0.5; margin-left: 2px; }
+button.deck-btn.like .deck-key { opacity: 0.75; }
+@media (hover: none), (max-width: 600px) { .deck-key { display: none; } button.deck-btn { height: 42px; padding: 0 16px; } button.deck-btn.icon-only { width: 42px; } }
+
+/* While dragging: a soft glow around the card and a glass label (violet for Like, rose for Pass) */
+.swipe-hint { display: none; }
+.stamp {
+  position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 0; border: 0; border-radius: inherit;
+  opacity: 0; pointer-events: none; transform: none; background: none; font-size: inherit; letter-spacing: normal;
+  box-shadow: inset 0 0 0 2px rgba(var(--c), 0.55), inset 0 0 60px rgba(var(--c), 0.14), 0 0 36px rgba(var(--c), 0.25);
+}
+.stamp-like { --c: 99, 102, 241; left: 0; color: inherit; }
+.stamp-nope { --c: 225, 29, 72; right: 0; color: inherit; }
+.stamp-label {
+  display: inline-flex; align-items: center; gap: 10px; padding: 10px 22px 10px 12px; border-radius: 999px; font-size: 17px; font-weight: 600; color: var(--text);
+  background: var(--shine), var(--glass-strong); border: 1px solid var(--rim-soft);
+  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: inset 0 1px 0 var(--rim), 0 12px 30px rgba(30, 41, 90, 0.18);
+}
+.stamp-label .ic { width: 30px; height: 30px; padding: 7px; box-sizing: border-box; margin: 0; border-radius: 50%; color: #fff; }
+.stamp-like .stamp-label .ic { background: var(--accent-grad); }
+.stamp-nope .stamp-label .ic { background: linear-gradient(135deg, #fb7185, #e11d48); }
+
+/* ======== Offer card: title, company line, spec sheet, alerts, why, description ======== */
+.swipe-company { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 14px; }
+.swipe-company > span:first-child { font-weight: 600; color: var(--text); }
+.swipe-place { display: inline-flex; align-items: center; gap: 4px; }
+.swipe-place .ic { width: 14px; height: 14px; margin: 0; opacity: 0.7; }
+.swipe-company .kind, .swipe-company .fact { font-size: 11.5px; }
+.spec {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin: 0 0 12px; padding: 0;
+  border: 1px solid var(--rim-soft); border-radius: 14px; overflow: hidden; background: var(--glass-soft);
+}
+.spec-cell { margin: 0; padding: 9px 14px 10px; border-left: 1px solid var(--line); }
+.spec-cell:first-child { border-left: 0; }
+.spec dt { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; line-height: 1; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.spec dt .ic { width: 12px; height: 12px; margin: 0; }
+.spec dd { margin: 6px 0 0; font-size: 15px; font-weight: 650; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spec-cell.is-missing dd { color: var(--muted); font-size: 13px; font-weight: 500; margin-top: 8px; }
+.spec-cell:first-child:not(.is-missing) dd { color: var(--accent); }
+.why-line { margin: 0 0 12px; display: grid; gap: 4px; }
+.why-line p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.why-line b { color: var(--text); font-weight: 600; }
+.why-line .ic { width: 14px; height: 14px; margin: 0 6px 0 0; vertical-align: -0.15em; color: var(--accent); }
+.why-line .why-bad .ic, .why-line .why-bad b { color: #c2410c; }
+@media (prefers-color-scheme: dark) { .why-line .why-bad .ic, .why-line .why-bad b { color: #fdba74; } }
+.swipe-card .offer-alert { margin: 0 0 12px; }
+@media (max-width: 600px) { .spec { grid-template-columns: 1fr 1fr; } .spec-cell:nth-child(3) { border-left: 0; } .spec-cell:nth-child(n+3) { border-top: 1px solid var(--line); } }
+.spec { border-color: color-mix(in srgb, var(--muted) 22%, transparent); background: transparent; box-shadow: none; }
+.spec-cell { border-left-color: color-mix(in srgb, var(--muted) 16%, transparent); text-align: left; background: none; box-shadow: none; border-radius: 0; }
+.paris-btn .pill-x { margin-left: 2px; }

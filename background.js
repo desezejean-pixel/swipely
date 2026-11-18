@@ -2,9 +2,11 @@
 importScripts('common.js');
 
 const SCAN_HOUR = 8; // daily checks start at the first chance after 8:00
-const PER_TICK = 5; // searches checked every 20 minutes, to stay gentle with the sites
+const PER_TICK = 5; // LinkedIn searches checked every 20 minutes, to stay gentle with LinkedIn
+const OTHERS_PER_TICK = 15; // searches on the other sites (each site gets only a few of them)
 const MAX_NEW_PER_SEARCH = 60;
-const DESCRIBE_PER_TICK = 4; // descriptions fetched every 20 minutes
+const DESCRIBE_PER_TICK = 4; // LinkedIn descriptions fetched every 20 minutes
+const OTHERS_DESCRIBE_PER_TICK = 12; // descriptions from the other sites
 const LINKEDIN_GAP_MS = 20000; // LinkedIn's public search blocks quick series of requests
 const LINKEDIN_PAUSE_MS = 3 * 60 * 60 * 1000;
 const LINKEDIN_DAILY_CAP = 80; // requests a day (searches + descriptions), like one person browsing
@@ -81,13 +83,20 @@ async function fetchLinkedin(url) {
 // Other sites: downloaded in the background (no cookies, nothing opens on screen),
 // then read by an invisible helper page, since this worker can't read HTML itself.
 // Sites that only show offers inside a real browser window can't be read automatically.
-const NOT_READABLE = /(^|\.)(jobteaser\.com|stationf\.co|salesforce\.com|metacareers\.com|careers\.microsoft\.com|welcometothejungle\.com)$/;
+const NOT_READABLE = /(^|\.)(jobteaser\.com|stationf\.co|salesforce\.com|metacareers\.com|careers\.microsoft\.com)$/;
 const CANT_READ = 'This site only shows its offers inside a browser window, so it can’t be checked automatically. Use the toolbar button when you’re on its page.';
+
+// A page a site shows to robots instead of the real one: tried again later.
+const ROBOT_CHECK = /awsWafCookieDomainList|gokuProps|challenge-platform|cf-chl-|Just a moment\.\.\./;
+class OfferGone extends Error {}
 
 async function fetchPage(url) {
   const res = await fetch(url, { credentials: 'omit' });
+  if (res.status === 404 || res.status === 410) throw new OfferGone('The offer is no longer on the site.');
   if (!res.ok) throw new Error(`The site answered ${res.status}`);
-  return res.text();
+  const html = await res.text();
+  if (html.length < 20000 && ROBOT_CHECK.test(html)) throw new Error('The site asked to slow down: tried again later.');
+  return html;
 }
 
 async function readInBackground(type, url) {
@@ -117,6 +126,21 @@ async function amazonSearch(url) {
     postedAt: isoFromText(j.posted_date),
     description: htmlText([j.description, j.basic_qualifications, j.preferred_qualifications].filter(Boolean).join('<br><br>'), true).slice(0, 8000),
   }));
+}
+
+// Welcome to the Jungle: offers its sitemap lists as updated since the last check (the past week the first time).
+async function wttjSearch(lastRun) {
+  const since = lastRun ? addDays(isoDate(new Date(lastRun)), -1) : addDays(today(), -7);
+  const files = [...(await fetchPage(WTTJ_SEARCH.url)).matchAll(/<loc>([^<]*job-listings[^<]*)<\/loc>/g)].map((m) => m[1]);
+  const offers = [];
+  for (const file of files) {
+    for (const [, url, mod] of (await fetchPage(file)).matchAll(/<loc>([^<]+)<\/loc>\s*<lastmod>([^<]+)<\/lastmod>/g)) {
+      const o = mod.slice(0, 10) >= since && wttjOffer(url);
+      if (o) offers.push(o);
+    }
+    await pause(1000);
+  }
+  return offers;
 }
 
 // Workday career sites (Nvidia…): their public job search data.
@@ -198,13 +222,14 @@ function fitsYou(o, profile) {
   return fitsPreferences(o, profile, { strict: true });
 }
 
-async function readSearch(url, name) {
+async function readSearch(url, name, lastRun) {
   const host = hostOf(url);
   const board = atsBoard(url);
   if (board) return atsSearch(board, name);
   if (/amazon\.jobs$/.test(host)) return amazonSearch(url);
   if (/myworkdayjobs\.com$/.test(host)) return workdaySearch(url);
-  if (NOT_READABLE.test(host)) throw new Error(CANT_READ);
+  if (url === WTTJ_SEARCH.url) return wttjSearch(lastRun);
+  if (NOT_READABLE.test(host) || /welcometothejungle\.com$/.test(host)) throw new Error(CANT_READ); // its search pages are closed to robots
   return (await readInBackground('scan', url))?.offers || [];
 }
 
@@ -233,32 +258,86 @@ async function describe(item) {
     const page = (await readInBackground('describe', item.url)) || {};
     fields.description = page.description || '';
     for (const k of ['location', 'pay', 'logo', 'companyUrl', 'postedAt', 'contract']) if (page[k] && !item[k]) fields[k] = page[k];
+    if (page.expired) fields.expired = true;
+    // Title, company and city guessed from the link (Welcome to the Jungle): the page's own words replace them.
+    if (item.titleFromLink) {
+      for (const k of ['title', 'company', 'location']) if (page[k]) fields[k] = page[k];
+      fields.titleFromLink = false;
+    }
   }
   if (fields.postedAgo && !item.postedAt) fields.postedAt = agoToDate(fields.postedAgo);
   delete fields.postedAgo;
   for (const k of ['logo', 'companyUrl', 'contract', 'postedAt']) if (item[k] && fields[k]) delete fields[k]; // keep what the search found
   fields.description = cleanDescription(fields.description);
   Object.assign(fields, missingDates({ ...item, ...fields }));
-  if (!fields.description) fields.describeError = 'No description found on the page.';
+  if (fields.expired) fields.expiredAt = item.expiredAt || new Date().toISOString();
+  // Checked again later: an empty page never wipes the description already read.
+  if (!fields.description && item.description) {
+    delete fields.description;
+    return updateInternship(item.id, fields);
+  }
+  if (!fields.description) {
+    fields.describeError = fields.expired ? 'The offer is no longer on the site.' : 'No description found on the page.';
+    fields.describeTries = (item.describeTries || 0) + 1;
+  }
   if (!item.duration && !fields.duration) fields.duration = guessDuration(fields.description);
+  // A found offer turns out to be in another language than French or English: it leaves Discover.
+  if (isForeignNew({ ...item, ...fields })) return deleteInternship(item.id).then(() => null);
   return updateInternship(item.id, fields);
 }
 
+// Sites that refuse pages asked too quickly: slower, and a page they refused is asked again later.
+const SLOW_SITES = /(^|\.)welcometothejungle\.com$/;
+const SLOW_SITE_GAP_MS = 8000;
+const DESCRIBE_TRIES = 3;
+const RECHECK_AFTER_MS = 4 * 24 * 60 * 60 * 1000; // an offer already read is checked again after 4 days
+const RECHECK_PER_TICK = 4;
+const RETRY_AFTER_MS = 12 * 60 * 60 * 1000;
+function retryDescribe(item) {
+  return SLOW_SITES.test(hostOf(item.url)) && Boolean(item.describeError) && (item.describeTries || 1) < DESCRIBE_TRIES
+    && Date.now() - new Date(item.describedAt).getTime() > RETRY_AFTER_MS;
+}
+
 // A few offers without a description, best matches first.
+// LinkedIn's are few at a time (its daily limit); the other sites' don't wait behind LinkedIn's pauses.
 let enriching = null;
 function runEnrich() {
   enriching ||= (async () => {
-    const profile = await loadProfile();
-    const todo = (await loadAll())
-      .filter((i) => i.url && !i.description && !i.describedAt && ['New', 'To apply'].includes(i.status))
-      .sort((a, b) => matchScore(b, profile).score - matchScore(a, profile).score)
-      .slice(0, DESCRIBE_PER_TICK);
-    for (const item of todo) {
+    const items = await loadAll();
+    const profile = withTaste(await loadProfile(), items); // your swipes count here too
+    const todo = items
+      .filter((i) => i.url && !i.description && (!i.describedAt || retryDescribe(i)) && ['New', 'To apply'].includes(i.status))
+      .sort((a, b) => matchScore(b, profile).score - matchScore(a, profile).score);
+    const linkedin = todo.filter((i) => linkedinJobId(i.url)).slice(0, DESCRIBE_PER_TICK);
+    const firstTime = todo.filter((i) => !linkedinJobId(i.url)).slice(0, OTHERS_DESCRIBE_PER_TICK);
+    // Still online? Offers you liked first, then the ones in Discover, checked again every few days.
+    const recheck = items
+      .filter((i) => i.url && i.description && !i.expired && !linkedinJobId(i.url) && ['New', 'To apply'].includes(i.status)
+        && Date.now() - new Date(i.describedAt || i.createdAt).getTime() > RECHECK_AFTER_MS)
+      .sort((a, b) => (b.status === 'To apply') - (a.status === 'To apply') || matchScore(b, profile).score - matchScore(a, profile).score)
+      .slice(0, RECHECK_PER_TICK);
+    const others = [...firstTime, ...recheck];
+    let linkedinWaits = false;
+    let lastHost = '';
+    const blocked = new Set();
+    for (const item of [...others, ...linkedin]) {
+      if (linkedinWaits && linkedinJobId(item.url)) continue;
+      if (blocked.has(hostOf(item.url))) continue;
+      // Welcome to the Jungle blocks quick series of pages: a gap between two of its pages.
+      const host = hostOf(item.url);
+      if (host === lastHost && SLOW_SITES.test(host)) await pause(SLOW_SITE_GAP_MS);
+      lastHost = host;
       try {
         await describe(item);
       } catch (e) {
-        if (e instanceof RetryLater) break;
-        await updateInternship(item.id, { describedAt: new Date().toISOString(), describeError: friendlyError(e) });
+        if (e instanceof RetryLater) linkedinWaits = true;
+        else if (e instanceof OfferGone) await updateInternship(item.id, { describedAt: new Date().toISOString(), expired: true, expiredAt: item.expiredAt || new Date().toISOString(), ...(item.description ? {} : { describeError: e.message }) });
+        else {
+          // Asked to slow down: the rest of this site waits for the next round, and it doesn't count as a try.
+          const slow = /slow down/.test(e.message);
+          if (slow) blocked.add(host);
+          await updateInternship(item.id, { describedAt: new Date().toISOString(), describeError: friendlyError(e), describeTries: (item.describeTries || 0) + (slow ? 0 : 1) });
+        }
       }
     }
   })().finally(() => (enriching = null));
@@ -275,8 +354,10 @@ function runScan(ids) {
 
 async function doScan(ids) {
   const todo = (await loadSearches()).filter((s) => !ids || ids.includes(s.id));
+  todo.sort((a, b) => isLinkedin(a.url) - isLinkedin(b.url)); // quick sites first, LinkedIn's slow ones after
   if (!todo.length) return 0;
-  const profile = await loadProfile();
+  // What you liked and passed on counts for which new offers are kept and come first.
+  const profile = withTaste(await loadProfile(), await loadAll());
   await chrome.storage.local.set({ scanState: { running: true, startedAt: Date.now() } });
   let total = 0;
   try {
@@ -284,13 +365,15 @@ async function doScan(ids) {
       const result = { lastError: '' };
       try {
         let offers;
-        offers = isLinkedin(s.url) ? await fetchLinkedin(s.url) : await readSearch(s.url, s.follow ? s.name : '');
+        offers = isLinkedin(s.url) ? await fetchLinkedin(s.url) : await readSearch(s.url, s.follow ? s.name : '', s.lastRun);
         // A followed company posts every kind of job: keep the ones that fit you (internships, junior roles, good matches).
         // Your Preferences apply to every search; broad sources (company boards, big tech, VC boards) must also fit you well.
         offers = offers.filter((o) => fitsPreferences(o, profile, { strict: !isLinkedin(s.url) }));
         const seen = new Set(s.seen || []);
         let fresh = offers.filter((o) => !seen.has(normalizeUrl(o.url)));
         if (profile.hideWeak) fresh = fresh.filter((o) => matchScore(o, profile).score >= profile.minScore);
+        // More than can be added at once (Welcome to the Jungle's first check): the best matches first.
+        if (fresh.length > MAX_NEW_PER_SEARCH) fresh.sort((a, b) => matchScore(b, profile).score - matchScore(a, profile).score);
         result.lastAdded = await addMany(fresh.slice(0, MAX_NEW_PER_SEARCH), { status: 'New', foundBy: s.name });
         result.lastFound = offers.length;
         result.seen = [...new Set([...seen, ...offers.map((o) => normalizeUrl(o.url))])].slice(-3000);
@@ -346,9 +429,17 @@ async function morningDigest() {
   if (parts.length) chrome.notifications.create('digest', { type: 'basic', iconUrl: 'icons/icon128.png', title: 'Swipely · today', message: parts.join(' · ') });
 }
 
-// Duplicates saved before they were merged, and dates still to read from descriptions.
+// Only offers found by a search and not sorted yet: the ones you saved or liked are always kept.
+function isForeignNew(item) {
+  return item.status === 'New' && Boolean(item.foundBy) && !readableLanguage(item);
+}
+
+// Duplicates saved before they were merged, dates still to read from descriptions,
+// and new offers in another language than French or English.
 async function tidyOffers() {
-  const { list, merged } = mergeDuplicates(await loadAll());
+  const { list: all, merged: dupes } = mergeDuplicates(await loadAll());
+  const list = all.filter((i) => !isForeignNew(i));
+  const merged = dupes || list.length !== all.length;
   let dated = 0;
   for (const i of list) {
     const d = missingDates(i);
@@ -379,7 +470,10 @@ async function scanDue() {
     if (s.lastRun && isoDate(new Date(s.lastRun)) === today()) return false;
     return !(isLinkedin(s.url) && linkedinDone);
   });
-  if (due.length) await runScan(due.slice(0, PER_TICK).map((s) => s.id));
+  // The other sites don't wait behind LinkedIn's searches and pauses: their own batch, every time.
+  const others = due.filter((s) => !isLinkedin(s.url)).slice(0, OTHERS_PER_TICK);
+  const linkedin = due.filter((s) => isLinkedin(s.url)).slice(0, PER_TICK);
+  if (due.length) await runScan([...others, ...linkedin].map((s) => s.id));
   await runEnrich();
 }
 
@@ -409,15 +503,15 @@ async function seedSearches() {
   await chrome.storage.local.set({ seeded: true });
 }
 
-// Added after the first version: big tech careers sites.
+// Added after the first version: big tech careers sites, then Welcome to the Jungle.
 async function addBigTechSearches() {
   const { seededBigTech } = await chrome.storage.local.get('seededBigTech');
-  if (seededBigTech === 2) return;
+  if (seededBigTech === 3) return;
   const searches = await loadSearches();
   const known = new Set(searches.map((x) => x.url));
-  const extra = bigTechSearches(await loadProfile()).filter((x) => !known.has(x.url)).map((x) => ({ id: crypto.randomUUID(), seen: [], ...x }));
+  const extra = [...bigTechSearches(await loadProfile()), WTTJ_SEARCH].filter((x) => !known.has(x.url)).map((x) => ({ id: crypto.randomUUID(), seen: [], ...x }));
   await saveSearches([...searches, ...extra]);
-  await chrome.storage.local.set({ seededBigTech: 2 });
+  await chrome.storage.local.set({ seededBigTech: 3 });
 }
 
 // Searches on sites that can't be read without a window are removed (only those the tracker created).
@@ -468,7 +562,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg?.type === 'describe') {
     loadAll()
       .then((list) => list.find((i) => i.id === msg.id))
-      .then((item) => (item ? describe(item) : null))
+      .then((item) => (item ? describe(item).catch((e) => {
+        if (!(e instanceof OfferGone)) throw e;
+        return updateInternship(item.id, { describedAt: new Date().toISOString(), expired: true, expiredAt: new Date().toISOString(), describeError: e.message });
+      }) : null))
       .then((item) => reply({ item }), (e) => reply({ error: friendlyError(e) }));
     return true;
   }
